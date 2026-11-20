@@ -14,7 +14,13 @@ from typing import List, Dict, Any, Optional
 import google.generativeai as genai
 from core.pdf_processor import ProcessedDocument
 from core.chunking import DocumentChunk
-from core.rag_engine import RAGEngine, SearchResult, DEFAULT_GEN_MODEL, STRICT_REFUSAL_PHRASE
+from core.rag_engine import (
+    RAGEngine,
+    SearchResult,
+    DEFAULT_GEN_MODEL,
+    FALLBACK_GEN_MODELS,
+    STRICT_REFUSAL_PHRASE
+)
 
 
 class DocumentTools:
@@ -25,6 +31,24 @@ class DocumentTools:
     def __init__(self, rag_engine: RAGEngine, gen_model: str = DEFAULT_GEN_MODEL):
         self.rag = rag_engine
         self.gen_model = gen_model
+
+    def _generate_with_fallback(self, prompt: str) -> str:
+        """Executes generation with automatic model fallback to avoid quota errors."""
+        candidate_models = [self.gen_model]
+        for fb in FALLBACK_GEN_MODELS:
+            if fb not in candidate_models:
+                candidate_models.append(fb)
+
+        last_err = ""
+        for m_name in candidate_models:
+            try:
+                m = genai.GenerativeModel(m_name)
+                res = m.generate_content(prompt, request_options={"timeout": 20})
+                return res.text.strip()
+            except Exception as e:
+                last_err = str(e)
+                continue
+        raise RuntimeError(f"All Gemini models failed: {last_err}")
 
     def search_document(
         self,
@@ -92,8 +116,6 @@ class DocumentTools:
         max_chunk_words = 1500
         words = full_text.split()
 
-        model = genai.GenerativeModel(self.gen_model)
-
         if len(words) <= max_chunk_words:
             prompt = f"""You are DocGenius, an expert AI document analyst.
 Provide a high-quality, professional {summary_type} of the following document.
@@ -111,11 +133,11 @@ Requirements:
 Format with clear Markdown headers, bold highlights, and bullet points.
 """
             try:
-                res = model.generate_content(prompt)
+                res_text = self._generate_with_fallback(prompt)
                 return {
                     "status": "success",
                     "doc_name": target_doc.doc_name,
-                    "summary": res.text.strip(),
+                    "summary": res_text,
                     "method": "Direct Full-Context Synthesis",
                     "pages_analyzed": target_doc.non_empty_pages
                 }
@@ -131,8 +153,8 @@ Format with clear Markdown headers, bold highlights, and bullet points.
             for idx, segment in enumerate(chunk_segments[:5]):  # Process up to 5 large sections
                 sec_prompt = f"Summarize key aspects of Section {idx + 1} of document '{target_doc.doc_name}':\n\n{segment}"
                 try:
-                    s_res = model.generate_content(sec_prompt)
-                    intermediate_summaries.append(f"### Section {idx + 1} Insights\n{s_res.text.strip()}")
+                    s_text = self._generate_with_fallback(sec_prompt)
+                    intermediate_summaries.append(f"### Section {idx + 1} Insights\n{s_text}")
                 except Exception:
                     continue
 
@@ -148,11 +170,11 @@ Structure:
 - Overall Conclusion
 """
             try:
-                final_res = model.generate_content(final_prompt)
+                final_text = self._generate_with_fallback(final_prompt)
                 return {
                     "status": "success",
                     "doc_name": target_doc.doc_name,
-                    "summary": final_res.text.strip(),
+                    "summary": final_text,
                     "method": f"Hierarchical Map-Reduce ({len(chunk_segments)} sections)",
                     "pages_analyzed": target_doc.non_empty_pages
                 }
@@ -191,13 +213,12 @@ Provide:
 
 Only include facts explicitly stated in the document.
 """
-        model = genai.GenerativeModel(self.gen_model)
         try:
-            res = model.generate_content(prompt)
+            res_text = self._generate_with_fallback(prompt)
             return {
                 "status": "success",
                 "doc_name": target_doc.doc_name,
-                "key_points": res.text.strip(),
+                "key_points": res_text,
                 "pages_reviewed": target_doc.non_empty_pages
             }
         except Exception as e:
@@ -244,13 +265,12 @@ Please provide:
 
 Strictly ground all statements in the text provided.
 """
-        model = genai.GenerativeModel(self.gen_model)
         try:
-            res = model.generate_content(prompt)
+            res_text = self._generate_with_fallback(prompt)
             return {
                 "status": "success",
                 "documents_compared": [d.doc_name for d in matching_docs],
-                "comparison": res.text.strip()
+                "comparison": res_text
             }
         except Exception as e:
             return {"status": "error", "message": f"Document comparison failed: {str(e)}"}

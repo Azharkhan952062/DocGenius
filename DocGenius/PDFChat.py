@@ -2,11 +2,13 @@
 DocGenius: Advanced AI-Powered PDF Document Assistant & RAG Engine.
 Features:
 - Multi-document page-by-page extraction & metadata preservation
-- Boundary-aware chunking & deduplication
+- Contextual heading fusion & boundary-aware chunking
+- Neighbor-chunk retrieval context expansion (window stitching)
 - Normalized FAISS Cosine Similarity retrieval
 - Strict answer grounding with verifiable source citations
 - Document Tools: Semantic Search, Hierarchical Summarization, Key-Point Extraction, Multi-Doc Comparison
 - Real RAG Evaluation Suite (Precision@K, Recall@K, MRR, Grounding Score)
+- Dedicated Developer / Retrieval Diagnostics Inspector
 - Enterprise-grade, modern responsive Streamlit UI
 """
 
@@ -30,6 +32,7 @@ from core.rag_engine import (
     RAGEngine,
     SearchResult,
     DEFAULT_GEN_MODEL,
+    FALLBACK_GEN_MODELS,
     DEFAULT_EMBED_MODEL,
     STRICT_REFUSAL_PHRASE
 )
@@ -151,11 +154,11 @@ st.markdown(
 
     .citation-snippet {
         color: #cbd5e1;
-        font-style: italic;
         background-color: #081720;
-        padding: 0.5rem;
+        padding: 0.6rem;
         border-radius: 4px;
         border: 1px solid #1a3646;
+        line-height: 1.45;
     }
 
     /* Badges */
@@ -180,6 +183,12 @@ st.markdown(
         background-color: #78350f;
         color: #fcd34d;
         border-color: #d97706;
+    }
+
+    .badge-info {
+        background-color: #1e1b4b;
+        color: #a5b4fc;
+        border-color: #4338ca;
     }
 
     /* File Uploader Customization */
@@ -283,7 +292,7 @@ with st.sidebar:
     st.markdown("#### 🧠 Model Selection")
     gen_model = st.selectbox(
         "Generative LLM",
-        options=["models/gemini-3.8-flash", "models/gemini-flash-latest", "models/gemini-pro-latest"],
+        options=FALLBACK_GEN_MODELS,
         index=0,
         help="Primary model used for grounded QA, summarization, and tools."
     )
@@ -325,13 +334,28 @@ with st.sidebar:
         help="Cosine similarity cutoff to filter out irrelevant chunks."
     )
 
+    expand_context_setting = st.checkbox(
+        "Context Expansion (Neighbor Stitching)",
+        value=True,
+        help="Automatically retrieves neighboring chunks from the same document to ensure headings and explanations remain united."
+    )
+
+    st.divider()
+
+    st.markdown("#### 🔬 Developer Mode")
+    dev_mode = st.checkbox(
+        "Enable Diagnostics Inspector",
+        value=False,
+        help="Enables low-level inspection of page text, chunks, vector scores, and retrieval thresholds."
+    )
+
     st.divider()
 
     st.markdown("#### 📊 Vector Index Status")
     is_indexed = st.session_state.rag_engine.is_indexed()
     if is_indexed:
         st.markdown(f'<span class="badge badge-success">✓ Ready: {len(st.session_state.chunks)} Chunks</span>', unsafe_allow_html=True)
-        st.markdown(f"**Index Type**: FAISS IndexFlatIP (Cosine)")
+        st.markdown(f"**Index**: FAISS IndexFlatIP (Cosine)")
         st.markdown(f"**Embed Dim**: {st.session_state.rag_engine.embedding_dimension or 3072}")
     else:
         st.markdown('<span class="badge badge-warning">⚠ No Documents Indexed</span>', unsafe_allow_html=True)
@@ -347,7 +371,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("DocGenius v2.0 • Advanced RAG Pipeline")
+    st.caption("DocGenius v2.1 • Resilient Multi-Doc RAG")
 
 
 # ---------------------------------------------------------
@@ -394,13 +418,14 @@ with st.expander("📂 Document Ingestion & Multi-PDF Upload", expanded=(not is_
 
                 st.session_state.processed_docs = docs
 
-                # Check for errors
-                errors = [d.error_message for d in docs if d.error_message and d.is_scanned_or_empty]
-                if errors:
-                    for err in errors:
-                        st.warning(err)
+                # Check for errors or extraction notes
+                for d in docs:
+                    if d.error_message:
+                        st.warning(f"⚠️ {d.doc_name}: {d.error_message}")
+                    for note in d.extraction_notes:
+                        st.info(f"ℹ️ {d.doc_name}: {note}")
 
-                # Chunking
+                # Contextual Chunking
                 chunks = chunk_multiple_documents(
                     docs=docs,
                     chunk_size=chunk_size,
@@ -442,13 +467,23 @@ doc_tools = DocumentTools(st.session_state.rag_engine, gen_model=gen_model)
 # ---------------------------------------------------------
 # Main Application Tabs
 # ---------------------------------------------------------
-tab_chat, tab_overview, tab_tools, tab_eval, tab_arch = st.tabs([
+tab_names = [
     "💬 Chat & Citations",
     "📊 Document Overview",
     "🛠️ Document Tools",
     "📈 RAG Evaluation",
     "🏛️ System Architecture"
-])
+]
+if dev_mode:
+    tab_names.append("🔬 Retrieval Diagnostics")
+
+tabs = st.tabs(tab_names)
+tab_chat = tabs[0]
+tab_overview = tabs[1]
+tab_tools = tabs[2]
+tab_eval = tabs[3]
+tab_arch = tabs[4]
+tab_diag = tabs[5] if dev_mode else None
 
 # =========================================================
 # TAB 1: Chat & Citations
@@ -473,14 +508,18 @@ with tab_chat:
                 if role == "assistant" and sources:
                     with st.expander(f"📚 View {len(sources)} Verified Sources & Page Citations"):
                         for s in sources:
+                            expanded_badge = '<span class="badge badge-info">Context Expanded</span>' if s.get("is_expanded") else ''
+                            pages_display = s.get("pages_str") or str(s.get("page_number", 1))
+                            snippet_text = s.get("expanded_snippet") or s.get("snippet", "")
+
                             st.markdown(
                                 f"""
                                 <div class="citation-card">
                                     <div class="citation-meta">
-                                        <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page {s['page_number']}</span>
+                                        <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge}</span>
                                         <span class="badge">Relevance: {s.get('similarity_score', 0):.2f}</span>
                                     </div>
-                                    <div class="citation-snippet">"{s['snippet']}"</div>
+                                    <div class="citation-snippet">"{snippet_text}"</div>
                                 </div>
                                 """,
                                 unsafe_allow_html=True
@@ -490,12 +529,10 @@ with tab_chat:
         query = st.chat_input("Ask a question about the uploaded document(s)...")
 
         if query:
-            # Append user message
             st.session_state.chat_history.append({"role": "user", "content": query})
             with st.chat_message("user"):
                 st.markdown(query)
 
-            # Intent routing
             available_names = [d.doc_name for d in st.session_state.processed_docs]
             intent = doc_tools.route_intent(query, available_names)
 
@@ -504,7 +541,8 @@ with tab_chat:
                     retrieved = st.session_state.rag_engine.retrieve(
                         query=query,
                         top_k=top_k,
-                        similarity_threshold=similarity_threshold
+                        similarity_threshold=similarity_threshold,
+                        expand_context=expand_context_setting
                     )
 
                     ans_data = st.session_state.rag_engine.generate_grounded_answer(
@@ -522,20 +560,23 @@ with tab_chat:
                     if sources:
                         with st.expander(f"📚 View {len(sources)} Verified Sources & Page Citations"):
                             for s in sources:
+                                expanded_badge = '<span class="badge badge-info">Context Expanded</span>' if s.get("is_expanded") else ''
+                                pages_display = s.get("pages_str") or str(s.get("page_number", 1))
+                                snippet_text = s.get("expanded_snippet") or s.get("snippet", "")
+
                                 st.markdown(
                                     f"""
                                     <div class="citation-card">
                                         <div class="citation-meta">
-                                            <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page {s['page_number']}</span>
+                                            <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge}</span>
                                             <span class="badge">Relevance: {s.get('similarity_score', 0):.2f}</span>
                                         </div>
-                                        <div class="citation-snippet">"{s['snippet']}"</div>
+                                        <div class="citation-snippet">"{snippet_text}"</div>
                                     </div>
                                     """,
                                     unsafe_allow_html=True
                                 )
 
-                    # Append to history
                     st.session_state.chat_history.append({
                         "role": "assistant",
                         "content": answer_text,
@@ -552,7 +593,6 @@ with tab_overview:
     if not st.session_state.processed_docs:
         st.info("No documents uploaded yet.")
     else:
-        # Aggregated stats
         total_docs = len(st.session_state.processed_docs)
         total_pages = sum(d.total_pages for d in st.session_state.processed_docs)
         total_words = sum(d.total_words for d in st.session_state.processed_docs)
@@ -612,19 +652,22 @@ with tab_overview:
                 col_m4.metric("Est. Read Time", f"{doc.estimated_read_time_mins} min")
 
                 if doc.error_message:
-                    st.warning(doc.error_message)
+                    st.warning(f"⚠️ {doc.error_message}")
+                for note in doc.extraction_notes:
+                    st.info(f"ℹ️ {note}")
 
                 st.markdown("##### Extracted Pages:")
                 for p in doc.pages:
-                    status = "⚪ Empty" if p.is_empty else f"🟢 {p.word_count} words"
+                    density_tag = " [Low Density Snippet]" if p.is_low_density else ""
+                    status = "⚪ Empty" if p.is_empty else f"🟢 {p.word_count} words ({p.char_count} chars){density_tag}"
                     with st.expander(f"Page {p.page_number} ({status})"):
                         if p.is_empty:
-                            st.caption("No text extracted from this page.")
+                            st.caption("No selectable text extracted from this page.")
                         else:
                             st.text_area(
                                 label=f"Page {p.page_number} Text",
                                 value=p.text,
-                                height=150,
+                                height=120,
                                 disabled=True,
                                 key=f"preview_{doc.doc_name}_{p.page_number}"
                             )
@@ -654,7 +697,6 @@ with tab_tools:
 
         st.divider()
 
-        # Tool 1: Semantic Search
         if tool_choice == "🔎 Semantic Vector Search":
             st.markdown("##### Direct Semantic Vector Search")
             st.caption("Search directly through FAISS vector space to inspect chunk rankings and similarity scores.")
@@ -690,7 +732,6 @@ with tab_tools:
                         else:
                             st.error(search_res["message"])
 
-        # Tool 2: Summarize Document
         elif tool_choice == "📝 Summarize Document":
             st.markdown("##### Document Summarization (Hierarchical Map-Reduce)")
             selected_doc = st.selectbox("Select document to summarize:", doc_names)
@@ -708,7 +749,6 @@ with tab_tools:
                     else:
                         st.error(res["message"])
 
-        # Tool 3: Key Points
         elif tool_choice == "💡 Extract Key Points":
             st.markdown("##### Extract Key Findings, Metrics & Conclusions")
             selected_doc = st.selectbox("Select document for key-point extraction:", doc_names)
@@ -721,7 +761,6 @@ with tab_tools:
                     else:
                         st.error(res["message"])
 
-        # Tool 4: Compare Documents
         elif tool_choice == "⚖️ Compare Documents":
             st.markdown("##### Multi-Document Comparative Analysis")
             if len(doc_names) < 2:
@@ -774,14 +813,7 @@ with tab_eval:
 
         if eval_mode == "Interactive Benchmark Test":
             st.markdown("##### Pre-configured Document Verification Suite")
-            st.markdown(
-                "Run standard information retrieval verification against the indexed documents. "
-                "Calculates **Precision@K**, **Recall@K**, **MRR**, and **Groundedness Score**."
-            )
-
-            # Sample questions based on uploaded documents
             first_doc = st.session_state.processed_docs[0]
-            # Extract sample tokens from first non-empty page
             sample_words = [w for w in first_doc.get_full_text().split() if len(w) > 4][:5]
             sample_term = sample_words[0] if sample_words else "document"
 
@@ -810,7 +842,6 @@ with tab_eval:
                 with st.spinner("Executing retrieval, generation, and metric evaluation..."):
                     result = evaluator.evaluate_test_case(tc, top_k=k_eval)
 
-                    # Display Metric Cards
                     col_e1, col_e2, col_e3, col_e4 = st.columns(4)
                     col_e1.metric(f"Precision@{k_eval}", f"{result.precision_at_k * 100:.1f}%")
                     col_e2.metric(f"Recall@{k_eval}", f"{result.recall_at_k * 100:.1f}%")
@@ -861,7 +892,7 @@ with tab_eval:
                 - **Recall@K**: Measures whether the complete set of required target concepts were captured across the top-K retrieved chunks.
                 - **Reciprocal Rank (RR)**: Reflects how early the first relevant chunk appeared in the ranked results (1.0 = Rank 1, 0.5 = Rank 2).
                 - **Context Grounding / Faithfulness**: Computes sentence-level token overlap against retrieved context to prevent hallucination.
-                - **Evaluation Limitations**: Lexical overlap metrics provide an objective lower bound for factual presence. While immune to LLM hallucination, they do not account for deep semantic paraphrasing.
+                - **Evaluation Limitations**: Lexical overlap metrics provide an objective lower bound for factual presence without hallucination risk.
                 """
             )
 
@@ -876,55 +907,119 @@ with tab_arch:
         """
         ```mermaid
         flowchart TD
-            subgraph INGESTION ["1. Ingestion & Validation"]
-                A[User PDF Upload] --> B[PyPDF2 Multi-Page Stream]
-                B --> C[Page-by-Page Metadata Tagging]
-                C --> D[Empty / Scanned PDF Detection]
+            subgraph INGESTION ["1. Ingestion & Quality Analysis"]
+                A[Multi-PDF Upload Stream] --> B[PyPDF2 Text Normalizer]
+                B --> C[Page Metadata & Low-Density Tagging]
             end
 
-            subgraph CHUNKING ["2. Chunking & Deduplication"]
+            subgraph CHUNKING ["2. Contextual Chunking & Fusion"]
+                C --> D[Heading & Fragment Fusion Engine]
                 D --> E[Recursive Boundary-Aware Splitter]
-                E --> F[Chunk Metadata Binding: Doc + Page + ID]
-                F --> G[MD5 Content Deduplication Filter]
+                E --> F[MD5 Deduplication Filter]
             end
 
-            subgraph VECTORSTORE ["3. Vector Storage"]
-                G --> H[Gemini Embedding 001 - 3072 dim]
-                H --> I[L2 Unit Normalization]
-                I --> J[FAISS IndexFlatIP Cosine Space]
+            subgraph VECTORSTORE ["3. Normalized Vector Index"]
+                F --> G[Gemini 3072-dim Embeddings]
+                G --> H[Unit L2 Normalization]
+                H --> I[FAISS IndexFlatIP Cosine Space]
             end
 
-            subgraph RETRIEVAL ["4. Retrieval & Tools"]
-                K[User Query] --> L[Query Embedding & Normalization]
-                L --> M[FAISS Inner Product Search]
-                M --> N[Cosine Similarity Threshold Filter]
-                N --> O[Top-K Ranked Results]
+            subgraph RETRIEVAL ["4. Retrieval & Context Expansion"]
+                J[User Query] --> K[Query Embedding & Normalization]
+                K --> L[FAISS Cosine Similarity Search]
+                L --> M[Neighbor-Chunk Window Stitching]
+                M --> N[Top-K Expanded Context Chunks]
             end
 
-            subgraph GENERATION ["5. Grounded Generation"]
-                O --> P[Context Assembler with Citations]
-                P --> Q[Gemini 3.8 Flash Engine]
-                Q --> R[Verifiable Answer + Page Citations]
+            subgraph GENERATION ["5. Resilient Generation"]
+                N --> O[Context Assembler + Citations]
+                O --> P[Gemini Resilient Model Fallback Chain]
+                P --> Q[Grounded Answer + Page Provenance]
             end
         ```
         """,
         unsafe_allow_html=True
     )
 
-    st.markdown("---")
-    st.markdown(
-        """
-        ### Architectural Enhancements Implemented:
-        1. **Multi-Document Ingestion**: Seamlessly ingests multiple PDFs, preserving page numbers, character/word statistics, and document identifiers.
-        2. **Boundary-Aware Chunking**: Eliminates mid-sentence character slicing, respecting paragraph and sentence boundaries with configurable overlap.
-        3. **Normalized Cosine Vector Space**: Uses FAISS `IndexFlatIP` over unit-normalized 3072-dimensional embeddings, producing true cosine similarities for thresholding.
-        4. **Strict Grounding Refusal**: Explicit refusal mechanism (`I couldn't find sufficient information in the uploaded document(s) to answer this question reliably.`) to prevent hallucinations.
-        5. **Deterministic Source Citations**: Every generated response links directly to exact page numbers, document names, and excerpted snippets.
-        6. **Analytical Tools Suite**: Search, hierarchical map-reduce summarization, key-point extraction, and multi-document comparison.
-        7. **Real RAG Evaluation Engine**: Precision@K, Recall@K, MRR, Grounding Score, and test suite execution.
-        8. **Streamlit Session State Optimization**: Prevents redundant re-embedding on reruns, drastically reducing latency and API usage.
-        """
-    )
+# =========================================================
+# TAB 6 (Optional): Developer / Retrieval Diagnostics Inspector
+# =========================================================
+if dev_mode and tab_diag:
+    with tab_diag:
+        st.markdown("#### 🔬 Developer Diagnostics & Retrieval Inspector")
+        st.caption("Inspect raw page extractions, generated chunks, similarity scores, and neighbor expansion logic.")
+
+        diag_section = st.radio(
+            "Diagnostic Inspection Area",
+            ["📑 Raw Page Extractions", "🧩 Generated Chunks & Metadata Registry", "🎯 Live Retrieval & Threshold Inspector"],
+            horizontal=True
+        )
+
+        st.divider()
+
+        if diag_section == "📑 Raw Page Extractions":
+            st.markdown("##### Extracted Page Inspection")
+            if not st.session_state.processed_docs:
+                st.info("No documents uploaded.")
+            else:
+                for doc in st.session_state.processed_docs:
+                    st.markdown(f"**Document**: `{doc.doc_name}` | Total Chars: `{doc.total_chars}` | Non-empty Pages: `{doc.non_empty_pages}`")
+                    for p in doc.pages:
+                        density_label = "⚠️ LOW DENSITY (<60 chars)" if p.is_low_density else "🟢 Standard"
+                        with st.expander(f"Page {p.page_number} ({len(p.text)} chars, {p.word_count} words) — {density_label}"):
+                            st.code(p.text if p.text else "[EMPTY STRING / NO SELECTABLE TEXT]")
+
+        elif diag_section == "🧩 Generated Chunks & Metadata Registry":
+            st.markdown("##### Chunk Registry & Fusion Inspection")
+            if not st.session_state.chunks:
+                st.info("No chunks indexed.")
+            else:
+                st.markdown(f"Total Chunks: `{len(st.session_state.chunks)}`")
+                for c in st.session_state.chunks:
+                    heading_tag = "📌 Has Heading Context" if c.has_heading_context else ""
+                    pages_str = ", ".join(str(p) for p in (c.spanned_pages or [c.page_number]))
+                    with st.expander(f"[{c.chunk_index}] ID: `{c.chunk_id}` | Page(s): {pages_str} | {c.char_count} chars {heading_tag}"):
+                        st.markdown(f"**Text Content:**")
+                        st.code(c.text)
+
+        elif diag_section == "🎯 Live Retrieval & Threshold Inspector":
+            st.markdown("##### Live Retrieval Diagnostic Probe")
+            probe_query = st.text_input("Test Query for Diagnostic Probe:", value="Explain the types of environment mentioned in the document.")
+            probe_expand = st.checkbox("Simulate with Context Window Expansion", value=True)
+
+            if st.button("Run Diagnostic Probe", type="primary"):
+                if not st.session_state.rag_engine.is_indexed():
+                    st.warning("Index is empty.")
+                else:
+                    results = st.session_state.rag_engine.retrieve(
+                        query=probe_query,
+                        top_k=top_k,
+                        similarity_threshold=similarity_threshold,
+                        expand_context=probe_expand
+                    )
+                    diag = st.session_state.rag_engine.last_diagnostics
+
+                    st.markdown(f"**Threshold Applied**: `{diag.get('threshold')}`")
+                    st.markdown(f"**Total Candidates Evaluated**: `{diag.get('total_candidates_examined')}`")
+                    st.markdown(f"**Accepted Results (Passed Threshold)**: `{len(results)}`")
+
+                    st.markdown("##### Candidate Rankings:")
+                    for c_cand in diag.get("candidates", []):
+                        status = "✅ ACCEPTED" if c_cand["passed_threshold"] else "❌ FILTERED (Below Threshold)"
+                        st.markdown(
+                            f"- **Score: `{c_cand['score']:.4f}`** | ID: `{c_cand['chunk_id']}` (Page {c_cand['page']}) -> {status}"
+                        )
+                        st.caption(f"Snippet: \"{c_cand['snippet']}\"")
+
+                    st.markdown("---")
+                    st.markdown("##### Retrieved Context Blocks Sent to LLM:")
+                    for r in results:
+                        st.markdown(f"**Rank {r.rank}** | ID: `{r.chunk.chunk_id}` | Similarity: `{r.similarity_score:.4f}`")
+                        if r.is_expanded:
+                            st.info("ℹ️ Context was expanded with adjacent chunks:")
+                            st.code(r.expanded_text)
+                        else:
+                            st.code(r.chunk.text)
 
 # ---------------------------------------------------------
 # Footer
