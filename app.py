@@ -1,29 +1,19 @@
+"""
+DocGenius Application Entrypoint.
+Ensures 100% deployment compatibility with Render, Streamlit Cloud, and Local execution.
+Dispatches directly to the DocGenius application engine.
+"""
+
 import os
-import streamlit as st
-from dotenv import load_dotenv
-import google.generativeai as genai
+import sys
+import runpy
 
-# Load the .env file
-load_dotenv()
+# Ensure root is in sys.path
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-# Retrieve the API key from the environment variable
-GEMINI_API = os.getenv("GEMINI_API")
-genai.configure(api_key=GEMINI_API)
+target_script = os.path.join(PROJECT_ROOT, "DocGenius", "PDFChat.py")
 
-# Streamlit app
-st.title("Gemini AI Content Generator")
-
-# Text input for user prompt (with form submission on Enter)
-user_input = st.text_input("Enter a prompt:")
-
-# Check if user input is provided and the 'Enter' key is pressed
-if user_input:
-    # Use the Gemini model to generate content
-    model = genai.GenerativeModel("gemini-1.5-flash")
-    response = model.generate_content(user_input)
-    
-    # Display the generated response
-    st.write("Response from Gemini AI:")
-    st.write(response.text)
-else:
-    st.write("Please enter a prompt to generate content.")
+if __name__ == "__main__" or "streamlit" in sys.modules:
+    runpy.run_path(target_script, run_name="__main__")

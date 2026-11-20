@@ -1,8 +1,8 @@
-google.generativeai==0.8.3
-
-tiktoken
-faiss-cpu
-langchain
-PyPDF2
-python-dotenv
-streamlit
+google-generativeai>=0.8.3
+faiss-cpu>=1.8.0
+PyPDF2>=3.0.0
+numpy>=1.24.0
+streamlit>=1.30.0
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+tiktoken>=0.7.0

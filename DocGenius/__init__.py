@@ -1,0 +1,3 @@
+"""
+DocGenius package initialization.
+"""
