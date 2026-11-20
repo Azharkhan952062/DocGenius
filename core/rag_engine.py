@@ -34,6 +34,7 @@ class SearchResult:
     rank: int
     expanded_text: Optional[str] = None  # Text after neighbor-chunk context expansion
     is_expanded: bool = False
+    is_ocr: bool = False
     neighbor_pages: List[int] = field(default_factory=list)
 
 
@@ -255,6 +256,7 @@ class RAGEngine:
                 rank=rank,
                 expanded_text=expanded_text,
                 is_expanded=is_expanded,
+                is_ocr=getattr(chunk, "is_ocr", False),
                 neighbor_pages=neighbor_pages
             ))
             rank += 1
@@ -318,7 +320,8 @@ class RAGEngine:
                 "expanded_snippet": use_text if r.is_expanded else None,
                 "similarity_score": r.similarity_score,
                 "chunk_id": c.chunk_id,
-                "is_expanded": r.is_expanded
+                "is_expanded": r.is_expanded,
+                "is_ocr": getattr(c, "is_ocr", False)
             })
 
         context_str = "\n\n---\n\n".join(context_blocks)

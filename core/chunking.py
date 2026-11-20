@@ -23,6 +23,7 @@ class DocumentChunk:
     chunk_index: int
     spanned_pages: List[int] = field(default_factory=list)
     has_heading_context: bool = False
+    is_ocr: bool = False
 
 
 def is_heading_or_fragment(text: str) -> bool:
@@ -136,65 +137,73 @@ def chunk_document(
             continue
         page_segments.append({
             "page_number": page.page_number,
-            "text": page.text.strip()
+            "text": page.text.strip(),
+            "is_ocr": getattr(page, "is_ocr_applied", False)
         })
 
     if not page_segments:
         return []
 
     # Step 2: Contextual Fusion & Boundary-Aware Splitting
-    # If a page or block is just a heading/fragment, fuse it with the next block
     fused_blocks: List[Dict[str, Any]] = []
     pending_prefix = ""
     pending_pages: List[int] = []
+    pending_ocr = False
 
     for seg in page_segments:
         p_num = seg["page_number"]
         p_text = seg["text"]
+        p_ocr = seg["is_ocr"]
 
         if is_heading_or_fragment(p_text):
-            # Accumulate heading/fragment to prefix the next content
             if pending_prefix:
                 pending_prefix += "\n\n" + p_text
             else:
                 pending_prefix = p_text
             if p_num not in pending_pages:
                 pending_pages.append(p_num)
+            if p_ocr:
+                pending_ocr = True
             continue
         else:
             if pending_prefix:
                 full_text = f"{pending_prefix}\n\n{p_text}"
                 pages = pending_pages + [p_num]
                 has_heading = True
+                has_ocr = pending_ocr or p_ocr
                 pending_prefix = ""
                 pending_pages = []
+                pending_ocr = False
             else:
                 full_text = p_text
                 pages = [p_num]
                 has_heading = False
+                has_ocr = p_ocr
 
             fused_blocks.append({
                 "text": full_text,
                 "primary_page": pages[0],
                 "pages": pages,
-                "has_heading": has_heading
+                "has_heading": has_heading,
+                "is_ocr": has_ocr
             })
 
     # If document ended with an orphan heading/fragment
     if pending_prefix:
         if fused_blocks:
-            # Append orphan heading to the last block
             fused_blocks[-1]["text"] += f"\n\n{pending_prefix}"
             for p in pending_pages:
                 if p not in fused_blocks[-1]["pages"]:
                     fused_blocks[-1]["pages"].append(p)
+            if pending_ocr:
+                fused_blocks[-1]["is_ocr"] = True
         else:
-            # Document only had heading/fragment
             fused_blocks.append({
                 "text": pending_prefix,
                 "primary_page": pending_pages[0] if pending_pages else 1,
                 "pages": pending_pages or [1],
-                "has_heading": True
+                "has_heading": True,
+                "is_ocr": pending_ocr
             })
 
     # Step 3: Split large blocks respecting chunk_size & overlap
@@ -207,6 +216,7 @@ def chunk_document(
         primary_page = block["primary_page"]
         spanned_pages = block["pages"]
         has_heading = block["has_heading"]
+        block_ocr = block.get("is_ocr", False)
 
         raw_splits = _split_text_with_separators(
             raw_text,
@@ -236,7 +246,8 @@ def chunk_document(
                 word_count=len(cleaned.split()),
                 chunk_index=global_chunk_idx,
                 spanned_pages=spanned_pages,
-                has_heading_context=has_heading
+                has_heading_context=has_heading,
+                is_ocr=block_ocr
             )
             all_chunks.append(chunk_obj)
             global_chunk_idx += 1

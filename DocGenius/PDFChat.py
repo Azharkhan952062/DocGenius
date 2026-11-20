@@ -340,6 +340,12 @@ with st.sidebar:
         help="Automatically retrieves neighboring chunks from the same document to ensure headings and explanations remain united."
     )
 
+    enable_ocr = st.checkbox(
+        "🔍 Multimodal OCR (Scanned Pages)",
+        value=True,
+        help="Automatically detects and transcribes image-only/scanned pages using Gemini Multimodal Vision."
+    )
+
     st.divider()
 
     st.markdown("#### 🔬 Developer Mode")
@@ -410,12 +416,23 @@ with st.expander("📂 Document Ingestion & Multi-PDF Upload", expanded=(not is_
         elif not st.session_state.rag_engine.is_configured():
             st.error("Gemini API key is required. Please set it in the sidebar or in your .env file.")
         else:
-            with st.spinner("Extracting text and preserving metadata across all pages..."):
+            ocr_status = st.empty()
+            def on_ocr_prog(curr, total, msg):
+                ocr_status.info(f"🔍 {msg}")
+
+            with st.spinner("Extracting text, analyzing page density, and applying OCR where needed..."):
                 docs = []
                 for file_obj in uploaded_files:
-                    doc = process_pdf(file_obj, doc_name=file_obj.name)
+                    doc = process_pdf(
+                        file_source=file_obj,
+                        doc_name=file_obj.name,
+                        enable_ocr=enable_ocr,
+                        api_key=st.session_state.rag_engine.api_key,
+                        ocr_progress_callback=on_ocr_prog
+                    )
                     docs.append(doc)
 
+                ocr_status.empty()
                 st.session_state.processed_docs = docs
 
                 # Check for errors or extraction notes
@@ -509,6 +526,7 @@ with tab_chat:
                     with st.expander(f"📚 View {len(sources)} Verified Sources & Page Citations"):
                         for s in sources:
                             expanded_badge = '<span class="badge badge-info">Context Expanded</span>' if s.get("is_expanded") else ''
+                            ocr_badge = '<span class="badge badge-warning">🔍 OCR Extracted</span>' if s.get("is_ocr") else ''
                             pages_display = s.get("pages_str") or str(s.get("page_number", 1))
                             snippet_text = s.get("expanded_snippet") or s.get("snippet", "")
 
@@ -516,7 +534,7 @@ with tab_chat:
                                 f"""
                                 <div class="citation-card">
                                     <div class="citation-meta">
-                                        <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge}</span>
+                                        <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge} &nbsp; {ocr_badge}</span>
                                         <span class="badge">Relevance: {s.get('similarity_score', 0):.2f}</span>
                                     </div>
                                     <div class="citation-snippet">"{snippet_text}"</div>
@@ -561,6 +579,7 @@ with tab_chat:
                         with st.expander(f"📚 View {len(sources)} Verified Sources & Page Citations"):
                             for s in sources:
                                 expanded_badge = '<span class="badge badge-info">Context Expanded</span>' if s.get("is_expanded") else ''
+                                ocr_badge = '<span class="badge badge-warning">🔍 OCR Extracted</span>' if s.get("is_ocr") else ''
                                 pages_display = s.get("pages_str") or str(s.get("page_number", 1))
                                 snippet_text = s.get("expanded_snippet") or s.get("snippet", "")
 
@@ -568,7 +587,7 @@ with tab_chat:
                                     f"""
                                     <div class="citation-card">
                                         <div class="citation-meta">
-                                            <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge}</span>
+                                            <span>📄 {s['doc_name']} &nbsp;|&nbsp; Page(s): {pages_display} &nbsp; {expanded_badge} &nbsp; {ocr_badge}</span>
                                             <span class="badge">Relevance: {s.get('similarity_score', 0):.2f}</span>
                                         </div>
                                         <div class="citation-snippet">"{snippet_text}"</div>
@@ -597,8 +616,9 @@ with tab_overview:
         total_pages = sum(d.total_pages for d in st.session_state.processed_docs)
         total_words = sum(d.total_words for d in st.session_state.processed_docs)
         total_chunks = len(st.session_state.chunks)
+        total_ocr_pages = sum(d.ocr_pages_count for d in st.session_state.processed_docs)
 
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             st.markdown(
                 f"""
@@ -639,6 +659,16 @@ with tab_overview:
                 """,
                 unsafe_allow_html=True
             )
+        with c5:
+            st.markdown(
+                f"""
+                <div class="metric-card">
+                    <div class="metric-title">Pages OCR'd</div>
+                    <div class="metric-value">{total_ocr_pages}</div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
         st.divider()
 
@@ -659,7 +689,8 @@ with tab_overview:
                 st.markdown("##### Extracted Pages:")
                 for p in doc.pages:
                     density_tag = " [Low Density Snippet]" if p.is_low_density else ""
-                    status = "⚪ Empty" if p.is_empty else f"🟢 {p.word_count} words ({p.char_count} chars){density_tag}"
+                    ocr_tag = " 🔍 [Gemini OCR Transcribed]" if getattr(p, "is_ocr_applied", False) else ""
+                    status = "⚪ Empty" if p.is_empty else f"🟢 {p.word_count} words ({p.char_count} chars){density_tag}{ocr_tag}"
                     with st.expander(f"Page {p.page_number} ({status})"):
                         if p.is_empty:
                             st.caption("No selectable text extracted from this page.")

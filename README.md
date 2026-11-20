@@ -33,6 +33,8 @@ DocGenius resolves these challenges through a modular, deterministic RAG archite
 ## 3. Key Features
 
 - **Multi-Document Ingestion**: Upload and index multiple PDFs concurrently with page-level provenance.
+- **Multimodal OCR Engine**: Intelligent detection of scanned and image-based pages. Uses high-performance `pypdfium2` rendering and Gemini Multimodal Vision to extract handwritten notes, complex figures, and text-poor documents.
+- **Selective OCR Activation**: Bypasses OCR for text-rich digital pages to maximize speed, activating only for sparse or scanned pages.
 - **Boundary-Aware Text Chunking**: Intelligent splitting respecting paragraph (`\n\n`), sentence (`. `, `? `), and word boundaries with configurable chunk size and overlap.
 - **Content Deduplication**: MD5 hash-based deduplication to filter duplicate and near-identical chunks.
 - **Normalized FAISS Vector Index**: `IndexFlatIP` combined with unit L2-normalized 3072-dimensional embeddings for exact cosine similarity scoring.
@@ -96,7 +98,7 @@ flowchart TD
 | **Generative LLM** | Google Gemini (`models/gemini-3.8-flash`, `models/gemini-flash-latest`) |
 | **Embedding Model** | Google Gemini Embeddings (`models/gemini-embedding-001`, 3072 dimensions) |
 | **Vector Database** | Facebook AI Similarity Search (`faiss-cpu`) |
-| **PDF Extraction** | PyPDF2 |
+| **PDF Extraction & OCR** | PyPDF2, pypdfium2, Gemini Multimodal Vision |
 | **Numeric & Math** | NumPy |
 | **Configuration** | python-dotenv |
 | **Deployment** | Render / Streamlit Cloud |
